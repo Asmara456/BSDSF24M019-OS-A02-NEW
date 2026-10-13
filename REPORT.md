@@ -82,3 +82,40 @@ I used an integer variable `display_mode` with named constants from an `enum`: `
 
 Keeping one flag and one decision point means a new display mode can be added later by adding one constant and one branch, without restructuring the program.
 
+
+## Feature 5: ls-v1.4.0 - Alphabetical Sort
+
+### Q1. Why must all directory entries be read into memory before sorting? What are the drawbacks for directories with millions of files?
+
+`readdir()` returns entries one at a time, in whatever order the file system stores them, and that order is not alphabetical. A sort can only put an item in the right place when it can compare it with all the others, and the last entry returned could belong at the very beginning. So the program cannot print entries as it reads them. It must collect every name first, sort the complete list, and only then display it.
+
+For a directory with millions of files this approach has drawbacks:
+- **Memory:** every name is stored (a string plus a pointer), so memory use grows with the number of files. Millions of entries can take hundreds of megabytes.
+- **Delay:** nothing is printed until the whole directory has been read and sorted, so the user waits with no output.
+- **Sorting time:** `qsort` takes O(n log n) comparisons, which is slow for very large n.
+- **Reallocation:** the dynamic array has to be grown repeatedly with `realloc`, which copies data.
+- **Stale results:** the directory can change while it is being read, so the sorted list may not match the directory afterwards.
+
+Without sorting (the original version), names are printed as they are read, using constant memory.
+
+### Q2. What is the purpose and signature of the comparison function required by qsort()? How does it work, and why must it take const void * arguments?
+
+`qsort()` is a generic function. It does not know what type of data it sorts, only the base address, the number of elements and the size of each element. To decide the order it calls a function supplied by the programmer: the comparison function.
+
+Signature:
+
+    int compare_names(const void *a, const void *b);
+
+The function receives pointers to two elements of the array and must return:
+- a negative value if the first element should come before the second,
+- zero if they are equal,
+- a positive value if the first should come after the second.
+
+In my program the array holds `char *` strings, so each argument points to a `char *`, which means it is really a `char **`. The function casts the `void *` to `const char **`, dereferences it once to get the string, and returns `strcmp(s1, s2)`:
+
+    const char *s1 = *(const char **)a;
+    const char *s2 = *(const char **)b;
+    return strcmp(s1, s2);
+
+The parameters must be `const void *` because `qsort()` has to work with any element type, and `void *` is the generic pointer type in C that can hold the address of any type. The `const` promises that the comparison will not modify the elements being compared. The parameter types must match what `qsort()` expects, so the function can be passed as a function pointer.
+
