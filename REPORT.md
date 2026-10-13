@@ -31,3 +31,30 @@ For example, `(mode & S_IRUSR) ? 'r' : '-'` prints `r` if the owner has read per
 
 **Special bits:** `S_ISUID`, `S_ISGID` and `S_ISVTX` are tested the same way. If setuid is set, the owner execute position shows `s` (or `S` if execute is not set); setgid does the same in the group position; and the sticky bit shows `t` (or `T`) in the others position.
 
+
+## Feature 3: ls-v1.2.0 - Column Display (Down Then Across)
+
+### Q1. Explain the logic for printing items in a "down then across" columnar format. Why is a single loop through the filenames insufficient?
+
+In "down then across" format the names are ordered down the first column, then continue at the top of the second column, and so on. I calculate the layout first:
+
+1. Find the length of the longest filename (`maxlen`).
+2. Column width = `maxlen + 2` (two spaces of spacing).
+3. Number of columns = `terminal_width / column_width` (at least 1).
+4. Number of rows = `ceil(total_files / num_columns)`.
+
+Then I print row by row. For row `r` and column `c`, the item printed is `names[c * num_rows + r]`. Moving one column to the right means jumping `num_rows` positions ahead in the array, while moving down a row means moving 1 position ahead.
+
+A single loop that prints `names[0], names[1], names[2]...` in order would print the names across each row (left to right), which is the order of the "across" format, not "down then across". The items that belong in the same row are not neighbours in the array, so the printing has to be organised by rows with an inner loop over columns, and the number of rows must be known before the first line is printed. That is why all the names must be read into an array first.
+
+### Q2. What is the purpose of ioctl here? What are the limitations of a fixed 80-column fallback?
+
+`ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws)` asks the terminal driver for the current window size and fills a `struct winsize` (`ws_col` is the number of columns and `ws_row` is the number of rows). I use `ws_col` to calculate how many columns of filenames fit on one line.
+
+If the program only used a fixed width of 80:
+- On a wider terminal it would waste space and show fewer columns than could fit.
+- On a narrower terminal (for example 60 columns) lines would be longer than the window, so the terminal would wrap them and the columns would be misaligned and hard to read.
+- It would not adapt when the user resizes the window.
+
+So ioctl makes the output fit the real window, and 80 is used only as a fallback when the size cannot be obtained (for example when ioctl fails).
+
