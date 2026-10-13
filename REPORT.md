@@ -58,3 +58,27 @@ If the program only used a fixed width of 80:
 
 So ioctl makes the output fit the real window, and 80 is used only as a fallback when the size cannot be obtained (for example when ioctl fails).
 
+
+## Feature 4: ls-v1.3.0 - Horizontal Column Display (-x)
+
+### Q1. Compare the complexity of the "down then across" (vertical) logic and the "across" (horizontal) logic. Which needs more pre-calculation, and why?
+
+The vertical ("down then across") layout is more complex and needs more pre-calculation. Before printing the first line, the program must know:
+- the longest filename and the column width,
+- the number of columns that fit (`terminal_width / column_width`),
+- the number of rows (`ceil(total_files / num_columns)`).
+
+Only then can it print row by row, using the index formula `names[col * num_rows + row]` for each cell, and it must stop when the index passes the end of the array. The number of rows depends on the total number of files, so the whole list must be known first.
+
+The horizontal ("across") layout needs very little pre-calculation. It only needs the column width and the terminal width. It then goes through the array once, in order, keeping a counter of the current horizontal position. If the next name would not fit on the line, it prints a newline and resets the counter. There is no row count and no index arithmetic, and a single loop is enough.
+
+### Q2. How did the program manage the different display modes (-l, -x, default)? How did it decide which function to call?
+
+I used an integer variable `display_mode` with named constants from an `enum`: `MODE_DEFAULT`, `MODE_LONG` and `MODE_HORIZONTAL`. It starts as `MODE_DEFAULT`. The `getopt()` loop in `main()` sets it to `MODE_LONG` when it sees `-l` and to `MODE_HORIZONTAL` when it sees `-x`. If several options are given, the last one wins.
+
+`main()` passes `display_mode` to `do_ls()`. In `do_ls()`:
+- if the mode is `MODE_LONG`, it calls `do_ls_long()`;
+- otherwise it reads all the names into an array, and then calls `print_horizontal()` if the mode is `MODE_HORIZONTAL`, or `print_columns()` (down then across) for the default.
+
+Keeping one flag and one decision point means a new display mode can be added later by adding one constant and one branch, without restructuring the program.
+
