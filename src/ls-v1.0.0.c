@@ -25,14 +25,26 @@ extern int errno;
 /* display modes */
 enum { MODE_DEFAULT = 0, MODE_LONG = 1, MODE_HORIZONTAL = 2 };
 
+/* ANSI colour codes */
+#define COLOR_RESET   "\033[0m"
+#define COLOR_BLUE    "\033[0;34m"   /* directories */
+#define COLOR_GREEN   "\033[0;32m"   /* executables */
+#define COLOR_RED     "\033[0;31m"   /* archives */
+#define COLOR_PINK    "\033[0;35m"   /* symbolic links */
+#define COLOR_REVERSE "\033[7m"      /* special files */
+
 void do_ls(const char *dir, int display_mode);
 void do_ls_long(const char *dir, char **names, int count);
 int compare_names(const void *a, const void *b);
 void mode_to_string(mode_t mode, char *str);
 int read_entries(const char *dir, char ***names, int *count, int *maxlen);
-void print_columns(char **names, int count, int maxlen);
+void print_columns(const char *dir, char **names, int count, int maxlen);
 int get_terminal_width(void);
-void print_horizontal(char **names, int count, int maxlen);
+void print_horizontal(const char *dir, char **names, int count, int maxlen);
+int ends_with(const char *s, const char *suffix);
+const char *get_color(mode_t mode, const char *name);
+void print_name(const char *name, mode_t mode);
+void print_cell(const char *dir, const char *name, int width);
 
 
 
@@ -144,30 +156,6 @@ int get_terminal_width(void)
 }
 
 /* Print names in columns, "down then across" */
-void print_columns(char **names, int count, int maxlen)
-{
-    if (count == 0)
-        return;
-
-    int term_width = get_terminal_width();
-    int col_width = maxlen + 2;                  /* longest name + 2 spaces */
-    int num_cols = term_width / col_width;
-    if (num_cols < 1)
-        num_cols = 1;
-    int num_rows = (count + num_cols - 1) / num_cols;   /* ceiling division */
-
-    for (int row = 0; row < num_rows; row++)
-    {
-        for (int col = 0; col < num_cols; col++)
-        {
-            int idx = col * num_rows + row;      /* down the column first */
-            if (idx >= count)
-                break;
-            printf("%-*s", col_width, names[idx]);
-        }
-        printf("\n");
-    }
-}
 
 int main(int argc, char *argv[])
 {
@@ -208,25 +196,6 @@ int main(int argc, char *argv[])
 
 
 /* Print names left to right, wrapping when the line is full */
-void print_horizontal(char **names, int count, int maxlen)
-{
-    int term_width = get_terminal_width();
-    int col_width = maxlen + 2;
-    int cur_pos = 0;                         /* current horizontal position */
-
-    for (int i = 0; i < count; i++)
-    {
-        if (cur_pos > 0 && cur_pos + col_width > term_width)
-        {
-            printf("\n");                    /* next name would not fit */
-            cur_pos = 0;
-        }
-        printf("%-*s", col_width, names[i]);
-        cur_pos += col_width;
-    }
-    if (cur_pos > 0)
-        printf("\n");
-}
 
 void do_ls(const char *dir, int display_mode)
 {
@@ -242,9 +211,9 @@ void do_ls(const char *dir, int display_mode)
     if (display_mode == MODE_LONG)
         do_ls_long(dir, names, count);
     else if (display_mode == MODE_HORIZONTAL)
-        print_horizontal(names, count, maxlen);
+        print_horizontal(dir, names, count, maxlen);
     else
-        print_columns(names, count, maxlen);
+        print_columns(dir, names, count, maxlen);
 
     for (int i = 0; i < count; i++)
         free(names[i]);
@@ -335,7 +304,8 @@ void do_ls_long(const char *dir, char **names, int count)
                w_group, gname,
                w_size, (long long)st.st_size,
                timebuf,
-               names[i]);
+               "");
+        print_name(names[i], st.st_mode);
 
         /* symbolic links: show "-> target" */
         if (S_ISLNK(st.st_mode))
@@ -350,4 +320,103 @@ void do_ls_long(const char *dir, char **names, int count)
         }
         printf("\n");
     }
+}
+
+/* 1 if string s ends with suffix */
+int ends_with(const char *s, const char *suffix)
+{
+    size_t ls = strlen(s), lx = strlen(suffix);
+    return ls >= lx && strcmp(s + ls - lx, suffix) == 0;
+}
+
+/* Choose the colour for a file from its st_mode (obtained with lstat) */
+const char *get_color(mode_t mode, const char *name)
+{
+    if (S_ISLNK(mode))
+        return COLOR_PINK;
+    if (S_ISDIR(mode))
+        return COLOR_BLUE;
+    if (S_ISCHR(mode) || S_ISBLK(mode) || S_ISFIFO(mode) || S_ISSOCK(mode))
+        return COLOR_REVERSE;
+    if (S_ISREG(mode) && (mode & (S_IXUSR | S_IXGRP | S_IXOTH)))
+        return COLOR_GREEN;
+    if (ends_with(name, ".tar") || ends_with(name, ".gz") || ends_with(name, ".zip"))
+        return COLOR_RED;
+    return "";
+}
+
+/* Print one name in its colour, then reset the colour */
+void print_name(const char *name, mode_t mode)
+{
+    const char *color = get_color(mode, name);
+    if (color[0] != '\0')
+        printf("%s%s%s", color, name, COLOR_RESET);
+    else
+        printf("%s", name);
+}
+
+/* Print a name in colour, then pad with spaces up to 'width' characters.
+   Padding is done by hand because colour codes would break printf("%-*s"). */
+void print_cell(const char *dir, const char *name, int width)
+{
+    char path[PATH_MAX];
+    struct stat st;
+    mode_t mode = 0;
+
+    snprintf(path, sizeof(path), "%s/%s", dir, name);
+    if (lstat(path, &st) == 0)
+        mode = st.st_mode;
+
+    print_name(name, mode);
+
+    int pad = width - (int)strlen(name);
+    for (int i = 0; i < pad; i++)
+        putchar(' ');
+}
+
+/* Print names in columns, "down then across" */
+void print_columns(const char *dir, char **names, int count, int maxlen)
+{
+    if (count == 0)
+        return;
+
+    int term_width = get_terminal_width();
+    int col_width = maxlen + 2;
+    int num_cols = term_width / col_width;
+    if (num_cols < 1)
+        num_cols = 1;
+    int num_rows = (count + num_cols - 1) / num_cols;
+
+    for (int row = 0; row < num_rows; row++)
+    {
+        for (int col = 0; col < num_cols; col++)
+        {
+            int idx = col * num_rows + row;
+            if (idx >= count)
+                break;
+            print_cell(dir, names[idx], col_width);
+        }
+        printf("\n");
+    }
+}
+
+/* Print names left to right, wrapping when the line is full */
+void print_horizontal(const char *dir, char **names, int count, int maxlen)
+{
+    int term_width = get_terminal_width();
+    int col_width = maxlen + 2;
+    int cur_pos = 0;
+
+    for (int i = 0; i < count; i++)
+    {
+        if (cur_pos > 0 && cur_pos + col_width > term_width)
+        {
+            printf("\n");
+            cur_pos = 0;
+        }
+        print_cell(dir, names[i], col_width);
+        cur_pos += col_width;
+    }
+    if (cur_pos > 0)
+        printf("\n");
 }
