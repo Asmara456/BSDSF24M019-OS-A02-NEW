@@ -119,3 +119,36 @@ In my program the array holds `char *` strings, so each argument points to a `ch
 
 The parameters must be `const void *` because `qsort()` has to work with any element type, and `void *` is the generic pointer type in C that can hold the address of any type. The `const` promises that the comparison will not modify the elements being compared. The parameter types must match what `qsort()` expects, so the function can be passed as a function pointer.
 
+## Feature 7: Recursive Listing (-R)
+
+### Q1: What is a base case in recursion, and what stops our recursive ls?
+
+A base case is the condition under which a recursive function stops
+calling itself. Without it, recursion would continue forever (or until
+the program runs out of stack memory).
+
+In our recursive ls, the base case is: when the current directory
+contains no subdirectories. In that case, the loop over the collected
+names finds no entry whose lstat() reports S_ISDIR, so no further
+recursive call is made, and the function returns normally.
+
+We also avoid infinite loops by skipping entries whose name starts with
+'.' (the read_entries() function already does this), which excludes "."
+(current directory) and ".." (parent). Without skipping these, the
+program would recurse into "." forever.
+
+### Q2: Why is it essential to construct a full path before making a recursive call?
+
+We must build the full path (e.g., "parent/subdir") before making the
+recursive call because the process's current working directory does not
+change as we descend. Linux directories are identified by path, not by
+a global "current subdirectory".
+
+If we simply called do_ls("subdir") from inside do_ls("parent"), the
+opendir("subdir") call would look for "subdir" relative to the process's
+current working directory — which is wherever the user launched the
+program from, NOT relative to "parent". In most cases the lookup would
+fail and the subdirectory would not be listed.
+
+By constructing the path "parent/subdir", we give opendir() a path that
+resolves correctly regardless of where the process was launched.
