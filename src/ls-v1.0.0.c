@@ -24,7 +24,8 @@ extern int errno;
 
 /* display modes */
 enum { MODE_DEFAULT = 0, MODE_LONG = 1, MODE_HORIZONTAL = 2 };
-
+/* recursive flag for -R */
+int recursive = 0;
 /* ANSI colour codes */
 #define COLOR_RESET   "\033[0m"
 #define COLOR_BLUE    "\033[0;34m"   /* directories */
@@ -162,8 +163,7 @@ int main(int argc, char *argv[])
     int opt;
     int display_mode = MODE_DEFAULT;     /* default: down-then-across columns */
 
-    while ((opt = getopt(argc, argv, "lx")) != -1)
-    {
+ while ((opt = getopt(argc, argv, "lxR")) != -1)    {
         switch (opt)
         {
         case 'l':
@@ -172,6 +172,9 @@ int main(int argc, char *argv[])
         case 'x':
             display_mode = MODE_HORIZONTAL;
             break;
+        case 'R':
+             recursive = 1;
+             break;
         default:
             fprintf(stderr, "Usage: %s [-l | -x] [directory...]\n", argv[0]);
             exit(EXIT_FAILURE);
@@ -208,6 +211,10 @@ void do_ls(const char *dir, int display_mode)
     /* sort alphabetically BEFORE any display function is called */
     qsort(names, count, sizeof(char *), compare_names);
 
+    /* header when in recursive mode */
+    if (recursive)
+        printf("%s:\n", dir);
+
     if (display_mode == MODE_LONG)
         do_ls_long(dir, names, count);
     else if (display_mode == MODE_HORIZONTAL)
@@ -215,11 +222,31 @@ void do_ls(const char *dir, int display_mode)
     else
         print_columns(dir, names, count, maxlen);
 
+    /* recurse into subdirectories */
+    if (recursive)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            char path[PATH_MAX];
+            struct stat st;
+
+            snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
+
+            if (lstat(path, &st) == -1)
+                continue;
+
+            if (S_ISDIR(st.st_mode))
+            {
+                printf("\n");
+                do_ls(path, display_mode);
+            }
+        }
+    }
+
     for (int i = 0; i < count; i++)
         free(names[i]);
     free(names);
 }
-
 /* Comparison function for qsort: each argument is a pointer to a char* */
 int compare_names(const void *a, const void *b)
 {
