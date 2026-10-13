@@ -18,12 +18,16 @@
 #include <grp.h>
 #include <time.h>
 #include <limits.h>
+#include <sys/ioctl.h>
 
 extern int errno;
 
 void do_ls(const char *dir, int long_flag);
 void do_ls_long(const char *dir);
 void mode_to_string(mode_t mode, char *str);
+int read_entries(const char *dir, char ***names, int *count, int *maxlen);
+void print_columns(char **names, int count, int maxlen);
+int get_terminal_width(void);
 
 int main(int argc, char *argv[])
 {
@@ -59,36 +63,6 @@ int main(int argc, char *argv[])
     return 0;
 }
 
-void do_ls(const char *dir, int long_flag)
-{
-    if (long_flag)
-    {
-        do_ls_long(dir);
-        return;
-    }
-
-    struct dirent *entry;
-    DIR *dp = opendir(dir);
-    if (dp == NULL)
-    {
-        fprintf(stderr, "Cannot open directory : %s\n", dir);
-        return;
-    }
-    errno = 0;
-    while ((entry = readdir(dp)) != NULL)
-    {
-        if (entry->d_name[0] == '.')
-            continue;
-        printf("%s\n", entry->d_name);
-    }
-
-    if (errno != 0)
-    {
-        perror("readdir failed");
-    }
-
-    closedir(dp);
-}
 
 /* Convert st_mode into a string like "drwxr-xr-x" */
 void mode_to_string(mode_t mode, char *str)
@@ -233,4 +207,119 @@ void do_ls_long(const char *dir)
     }
 
     closedir(dp);
+}
+
+void do_ls(const char *dir, int long_flag)
+{
+    if (long_flag)
+    {
+        do_ls_long(dir);
+        return;
+    }
+
+    char **names = NULL;
+    int count = 0, maxlen = 0;
+
+    if (read_entries(dir, &names, &count, &maxlen) == -1)
+        return;
+
+    print_columns(names, count, maxlen);
+
+    for (int i = 0; i < count; i++)
+        free(names[i]);
+    free(names);
+}
+
+/* Read all non-hidden names into a dynamic array; track the longest name */
+int read_entries(const char *dir, char ***names, int *count, int *maxlen)
+{
+    DIR *dp = opendir(dir);
+    if (dp == NULL)
+    {
+        fprintf(stderr, "Cannot open directory : %s\n", dir);
+        return -1;
+    }
+
+    int capacity = 16;
+    char **list = malloc(capacity * sizeof(char *));
+    if (list == NULL)
+    {
+        perror("malloc");
+        closedir(dp);
+        return -1;
+    }
+
+    int n = 0;
+    struct dirent *entry;
+    errno = 0;
+    while ((entry = readdir(dp)) != NULL)
+    {
+        if (entry->d_name[0] == '.')
+            continue;
+
+        if (n == capacity)                 /* array full: double it */
+        {
+            capacity *= 2;
+            char **tmp = realloc(list, capacity * sizeof(char *));
+            if (tmp == NULL)
+            {
+                perror("realloc");
+                break;
+            }
+            list = tmp;
+        }
+
+        list[n] = strdup(entry->d_name);
+        if (list[n] == NULL)
+        {
+            perror("strdup");
+            break;
+        }
+        int len = strlen(list[n]);
+        if (len > *maxlen)
+            *maxlen = len;
+        n++;
+    }
+    if (errno != 0)
+        perror("readdir failed");
+
+    closedir(dp);
+    *names = list;
+    *count = n;
+    return 0;
+}
+
+/* Terminal width in characters; falls back to 80 if ioctl fails */
+int get_terminal_width(void)
+{
+    struct winsize ws;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0)
+        return 80;
+    return ws.ws_col;
+}
+
+/* Print names in columns, "down then across" */
+void print_columns(char **names, int count, int maxlen)
+{
+    if (count == 0)
+        return;
+
+    int term_width = get_terminal_width();
+    int col_width = maxlen + 2;                  /* longest name + 2 spaces */
+    int num_cols = term_width / col_width;
+    if (num_cols < 1)
+        num_cols = 1;
+    int num_rows = (count + num_cols - 1) / num_cols;   /* ceiling division */
+
+    for (int row = 0; row < num_rows; row++)
+    {
+        for (int col = 0; col < num_cols; col++)
+        {
+            int idx = col * num_rows + row;      /* down the column first */
+            if (idx >= count)
+                break;
+            printf("%-*s", col_width, names[idx]);
+        }
+        printf("\n");
+    }
 }
