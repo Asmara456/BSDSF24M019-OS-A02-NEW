@@ -26,7 +26,8 @@ extern int errno;
 enum { MODE_DEFAULT = 0, MODE_LONG = 1, MODE_HORIZONTAL = 2 };
 
 void do_ls(const char *dir, int display_mode);
-void do_ls_long(const char *dir);
+void do_ls_long(const char *dir, char **names, int count);
+int compare_names(const void *a, const void *b);
 void mode_to_string(mode_t mode, char *str);
 int read_entries(const char *dir, char ***names, int *count, int *maxlen);
 void print_columns(char **names, int count, int maxlen);
@@ -72,113 +73,6 @@ void mode_to_string(mode_t mode, char *str)
     str[10] = '\0';
 }
 
-void do_ls_long(const char *dir)
-{
-    struct dirent *entry;
-    struct stat st;
-    char path[PATH_MAX];
-
-    DIR *dp = opendir(dir);
-    if (dp == NULL)
-    {
-        fprintf(stderr, "Cannot open directory : %s\n", dir);
-        return;
-    }
-
-    /* PASS 1: find the widest value in each column so output lines up */
-    int w_link = 0, w_user = 0, w_group = 0, w_size = 0;
-    long long total_blocks = 0;
-
-    errno = 0;
-    while ((entry = readdir(dp)) != NULL)
-    {
-        if (entry->d_name[0] == '.')
-            continue;
-        snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name);
-        if (lstat(path, &st) == -1)
-        {
-            perror(path);
-            continue;
-        }
-        total_blocks += st.st_blocks;
-
-        char buf[64];
-        int len = snprintf(buf, sizeof(buf), "%lu", (unsigned long)st.st_nlink);
-        if (len > w_link) w_link = len;
-
-        struct passwd *pw = getpwuid(st.st_uid);
-        if (pw) len = strlen(pw->pw_name);
-        else    len = snprintf(buf, sizeof(buf), "%u", st.st_uid);
-        if (len > w_user) w_user = len;
-
-        struct group *gr = getgrgid(st.st_gid);
-        if (gr) len = strlen(gr->gr_name);
-        else    len = snprintf(buf, sizeof(buf), "%u", st.st_gid);
-        if (len > w_group) w_group = len;
-
-        len = snprintf(buf, sizeof(buf), "%lld", (long long)st.st_size);
-        if (len > w_size) w_size = len;
-    }
-
-    /* st_blocks counts 512-byte blocks; ls prints 1024-byte blocks */
-    printf("total %lld\n", total_blocks / 2);
-
-    /* PASS 2: print every entry */
-    rewinddir(dp);
-    while ((entry = readdir(dp)) != NULL)
-    {
-        if (entry->d_name[0] == '.')
-            continue;
-        snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name);
-        if (lstat(path, &st) == -1)
-            continue;
-
-        char perms[11];
-        mode_to_string(st.st_mode, perms);
-
-        struct passwd *pw = getpwuid(st.st_uid);
-        struct group *gr = getgrgid(st.st_gid);
-        char uname[32], gname[32];
-        if (pw) snprintf(uname, sizeof(uname), "%s", pw->pw_name);
-        else    snprintf(uname, sizeof(uname), "%u", st.st_uid);
-        if (gr) snprintf(gname, sizeof(gname), "%s", gr->gr_name);
-        else    snprintf(gname, sizeof(gname), "%u", st.st_gid);
-
-        /* ctime() returns "Wed Jun 30 21:49:08 1993\n" */
-        time_t mtime = st.st_mtime;
-        char *t = ctime(&mtime);
-        char timebuf[32];
-        time_t now = time(NULL);
-        if (now - mtime > 15552000 || mtime > now)     /* older than ~6 months */
-            snprintf(timebuf, sizeof(timebuf), "%.6s  %.4s", t + 4, t + 20);
-        else
-            snprintf(timebuf, sizeof(timebuf), "%.12s", t + 4);
-
-        printf("%s %*lu %-*s %-*s %*lld %s %s",
-               perms,
-               w_link, (unsigned long)st.st_nlink,
-               w_user, uname,
-               w_group, gname,
-               w_size, (long long)st.st_size,
-               timebuf,
-               entry->d_name);
-
-        /* symbolic links: show "-> target" */
-        if (S_ISLNK(st.st_mode))
-        {
-            char target[PATH_MAX];
-            ssize_t n = readlink(path, target, sizeof(target) - 1);
-            if (n != -1)
-            {
-                target[n] = '\0';
-                printf(" -> %s", target);
-            }
-        }
-        printf("\n");
-    }
-
-    closedir(dp);
-}
 
 
 /* Read all non-hidden names into a dynamic array; track the longest name */
@@ -312,29 +206,6 @@ int main(int argc, char *argv[])
     return 0;
 }
 
-void do_ls(const char *dir, int display_mode)
-{
-    if (display_mode == MODE_LONG)
-    {
-        do_ls_long(dir);
-        return;
-    }
-
-    char **names = NULL;
-    int count = 0, maxlen = 0;
-
-    if (read_entries(dir, &names, &count, &maxlen) == -1)
-        return;
-
-    if (display_mode == MODE_HORIZONTAL)
-        print_horizontal(names, count, maxlen);
-    else
-        print_columns(names, count, maxlen);
-
-    for (int i = 0; i < count; i++)
-        free(names[i]);
-    free(names);
-}
 
 /* Print names left to right, wrapping when the line is full */
 void print_horizontal(char **names, int count, int maxlen)
@@ -355,4 +226,128 @@ void print_horizontal(char **names, int count, int maxlen)
     }
     if (cur_pos > 0)
         printf("\n");
+}
+
+void do_ls(const char *dir, int display_mode)
+{
+    char **names = NULL;
+    int count = 0, maxlen = 0;
+
+    if (read_entries(dir, &names, &count, &maxlen) == -1)
+        return;
+
+    /* sort alphabetically BEFORE any display function is called */
+    qsort(names, count, sizeof(char *), compare_names);
+
+    if (display_mode == MODE_LONG)
+        do_ls_long(dir, names, count);
+    else if (display_mode == MODE_HORIZONTAL)
+        print_horizontal(names, count, maxlen);
+    else
+        print_columns(names, count, maxlen);
+
+    for (int i = 0; i < count; i++)
+        free(names[i]);
+    free(names);
+}
+
+/* Comparison function for qsort: each argument is a pointer to a char* */
+int compare_names(const void *a, const void *b)
+{
+    const char *s1 = *(const char **)a;
+    const char *s2 = *(const char **)b;
+    return strcmp(s1, s2);
+}
+
+/* Long listing of the (already sorted) names array */
+void do_ls_long(const char *dir, char **names, int count)
+{
+    struct stat st;
+    char path[PATH_MAX];
+
+    /* PASS 1: find the widest value in each column so output lines up */
+    int w_link = 0, w_user = 0, w_group = 0, w_size = 0;
+    long long total_blocks = 0;
+
+    for (int i = 0; i < count; i++)
+    {
+        snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
+        if (lstat(path, &st) == -1)
+        {
+            perror(path);
+            continue;
+        }
+        total_blocks += st.st_blocks;
+
+        char buf[64];
+        int len = snprintf(buf, sizeof(buf), "%lu", (unsigned long)st.st_nlink);
+        if (len > w_link) w_link = len;
+
+        struct passwd *pw = getpwuid(st.st_uid);
+        if (pw) len = strlen(pw->pw_name);
+        else    len = snprintf(buf, sizeof(buf), "%u", st.st_uid);
+        if (len > w_user) w_user = len;
+
+        struct group *gr = getgrgid(st.st_gid);
+        if (gr) len = strlen(gr->gr_name);
+        else    len = snprintf(buf, sizeof(buf), "%u", st.st_gid);
+        if (len > w_group) w_group = len;
+
+        len = snprintf(buf, sizeof(buf), "%lld", (long long)st.st_size);
+        if (len > w_size) w_size = len;
+    }
+
+    /* st_blocks counts 512-byte blocks; ls prints 1024-byte blocks */
+    printf("total %lld\n", total_blocks / 2);
+
+    /* PASS 2: print every entry */
+    for (int i = 0; i < count; i++)
+    {
+        snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
+        if (lstat(path, &st) == -1)
+            continue;
+
+        char perms[11];
+        mode_to_string(st.st_mode, perms);
+
+        struct passwd *pw = getpwuid(st.st_uid);
+        struct group *gr = getgrgid(st.st_gid);
+        char uname[32], gname[32];
+        if (pw) snprintf(uname, sizeof(uname), "%s", pw->pw_name);
+        else    snprintf(uname, sizeof(uname), "%u", st.st_uid);
+        if (gr) snprintf(gname, sizeof(gname), "%s", gr->gr_name);
+        else    snprintf(gname, sizeof(gname), "%u", st.st_gid);
+
+        /* ctime() returns "Wed Jun 30 21:49:08 1993\n" */
+        time_t mtime = st.st_mtime;
+        char *t = ctime(&mtime);
+        char timebuf[32];
+        time_t now = time(NULL);
+        if (now - mtime > 15552000 || mtime > now)     /* older than ~6 months */
+            snprintf(timebuf, sizeof(timebuf), "%.6s  %.4s", t + 4, t + 20);
+        else
+            snprintf(timebuf, sizeof(timebuf), "%.12s", t + 4);
+
+        printf("%s %*lu %-*s %-*s %*lld %s %s",
+               perms,
+               w_link, (unsigned long)st.st_nlink,
+               w_user, uname,
+               w_group, gname,
+               w_size, (long long)st.st_size,
+               timebuf,
+               names[i]);
+
+        /* symbolic links: show "-> target" */
+        if (S_ISLNK(st.st_mode))
+        {
+            char target[PATH_MAX];
+            ssize_t n = readlink(path, target, sizeof(target) - 1);
+            if (n != -1)
+            {
+                target[n] = '\0';
+                printf(" -> %s", target);
+            }
+        }
+        printf("\n");
+    }
 }
