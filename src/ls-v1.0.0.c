@@ -22,46 +22,17 @@
 
 extern int errno;
 
-void do_ls(const char *dir, int long_flag);
+/* display modes */
+enum { MODE_DEFAULT = 0, MODE_LONG = 1, MODE_HORIZONTAL = 2 };
+
+void do_ls(const char *dir, int display_mode);
 void do_ls_long(const char *dir);
 void mode_to_string(mode_t mode, char *str);
 int read_entries(const char *dir, char ***names, int *count, int *maxlen);
 void print_columns(char **names, int count, int maxlen);
 int get_terminal_width(void);
+void print_horizontal(char **names, int count, int maxlen);
 
-int main(int argc, char *argv[])
-{
-    int opt;
-    int long_flag = 0;
-
-    while ((opt = getopt(argc, argv, "l")) != -1)
-    {
-        switch (opt)
-        {
-        case 'l':
-            long_flag = 1;
-            break;
-        default:
-            fprintf(stderr, "Usage: %s [-l] [directory...]\n", argv[0]);
-            exit(EXIT_FAILURE);
-        }
-    }
-
-    if (optind == argc)
-    {
-        do_ls(".", long_flag);
-    }
-    else
-    {
-        for (int i = optind; i < argc; i++)
-        {
-            printf("Directory listing of %s : \n", argv[i]);
-            do_ls(argv[i], long_flag);
-            puts("");
-        }
-    }
-    return 0;
-}
 
 
 /* Convert st_mode into a string like "drwxr-xr-x" */
@@ -209,26 +180,6 @@ void do_ls_long(const char *dir)
     closedir(dp);
 }
 
-void do_ls(const char *dir, int long_flag)
-{
-    if (long_flag)
-    {
-        do_ls_long(dir);
-        return;
-    }
-
-    char **names = NULL;
-    int count = 0, maxlen = 0;
-
-    if (read_entries(dir, &names, &count, &maxlen) == -1)
-        return;
-
-    print_columns(names, count, maxlen);
-
-    for (int i = 0; i < count; i++)
-        free(names[i]);
-    free(names);
-}
 
 /* Read all non-hidden names into a dynamic array; track the longest name */
 int read_entries(const char *dir, char ***names, int *count, int *maxlen)
@@ -322,4 +273,86 @@ void print_columns(char **names, int count, int maxlen)
         }
         printf("\n");
     }
+}
+
+int main(int argc, char *argv[])
+{
+    int opt;
+    int display_mode = MODE_DEFAULT;     /* default: down-then-across columns */
+
+    while ((opt = getopt(argc, argv, "lx")) != -1)
+    {
+        switch (opt)
+        {
+        case 'l':
+            display_mode = MODE_LONG;
+            break;
+        case 'x':
+            display_mode = MODE_HORIZONTAL;
+            break;
+        default:
+            fprintf(stderr, "Usage: %s [-l | -x] [directory...]\n", argv[0]);
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    if (optind == argc)
+    {
+        do_ls(".", display_mode);
+    }
+    else
+    {
+        for (int i = optind; i < argc; i++)
+        {
+            printf("Directory listing of %s : \n", argv[i]);
+            do_ls(argv[i], display_mode);
+            puts("");
+        }
+    }
+    return 0;
+}
+
+void do_ls(const char *dir, int display_mode)
+{
+    if (display_mode == MODE_LONG)
+    {
+        do_ls_long(dir);
+        return;
+    }
+
+    char **names = NULL;
+    int count = 0, maxlen = 0;
+
+    if (read_entries(dir, &names, &count, &maxlen) == -1)
+        return;
+
+    if (display_mode == MODE_HORIZONTAL)
+        print_horizontal(names, count, maxlen);
+    else
+        print_columns(names, count, maxlen);
+
+    for (int i = 0; i < count; i++)
+        free(names[i]);
+    free(names);
+}
+
+/* Print names left to right, wrapping when the line is full */
+void print_horizontal(char **names, int count, int maxlen)
+{
+    int term_width = get_terminal_width();
+    int col_width = maxlen + 2;
+    int cur_pos = 0;                         /* current horizontal position */
+
+    for (int i = 0; i < count; i++)
+    {
+        if (cur_pos > 0 && cur_pos + col_width > term_width)
+        {
+            printf("\n");                    /* next name would not fit */
+            cur_pos = 0;
+        }
+        printf("%-*s", col_width, names[i]);
+        cur_pos += col_width;
+    }
+    if (cur_pos > 0)
+        printf("\n");
 }
